@@ -62,16 +62,16 @@
     },
     "api_server": {
         "enabled": {{ api_server | lower }},
-        "listen_ip_address": "{{ api_server_listen_addr | default("127.0.0.1", true) }}",
+        "listen_ip_address": "{{ api_server_listen_addr | default("0.0.0.0", true) }}",
         "listen_port": 8080,
         "verbosity": "error",
         "enable_openapi": false,
         "jwt_secret_key": "{{ api_server_jwt_key }}",
         "CORS_origins": [],
-        "username": "{{ api_server_username }}",
-        "password": "{{ api_server_password }}"
+        "username": "user",
+        "password": "password"
     },
-    "bot_name": "freqtrade",
+    "bot_name": "bot01",
     "initial_state": "running",
     "force_entry_enable": false,
     "internals": {

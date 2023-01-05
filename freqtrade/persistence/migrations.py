@@ -1,5 +1,5 @@
 import logging
-from typing import List
+from typing import List, Optional
 
 from sqlalchemy import inspect, select, text, tuple_, update
 
@@ -31,9 +31,9 @@ def get_backup_name(tabs: List[str], backup_prefix: str):
     return table_back_name
 
 
-def get_last_sequence_ids(engine, trade_back_name, order_back_name):
-    order_id: int = None
-    trade_id: int = None
+def get_last_sequence_ids(engine, trade_back_name: str, order_back_name: str):
+    order_id: Optional[int] = None
+    trade_id: Optional[int] = None
 
     if engine.name == 'postgresql':
         with engine.begin() as connection:
@@ -109,11 +109,10 @@ def migrate_trades_and_orders_table(
     else:
         is_short = get_column_def(cols, 'is_short', '0')
 
-    # Margin Properties
+    # Futures Properties
     interest_rate = get_column_def(cols, 'interest_rate', '0.0')
-
-    # Futures properties
     funding_fees = get_column_def(cols, 'funding_fees', '0.0')
+    max_stake_amount = get_column_def(cols, 'max_stake_amount', 'stake_amount')
 
     # If ticker-interval existed use that, else null.
     if has_column(cols, 'ticker_interval'):
@@ -162,7 +161,8 @@ def migrate_trades_and_orders_table(
             timeframe, open_trade_value, close_profit_abs,
             trading_mode, leverage, liquidation_price, is_short,
             interest_rate, funding_fees, realized_profit,
-            amount_precision, price_precision, precision_mode, contract_size
+            amount_precision, price_precision, precision_mode, contract_size,
+            max_stake_amount
             )
         select id, lower(exchange), pair, {base_currency} base_currency,
             {stake_currency} stake_currency,
@@ -190,7 +190,8 @@ def migrate_trades_and_orders_table(
             {is_short} is_short, {interest_rate} interest_rate,
             {funding_fees} funding_fees, {realized_profit} realized_profit,
             {amount_precision} amount_precision, {price_precision} price_precision,
-            {precision_mode} precision_mode, {contract_size} contract_size
+            {precision_mode} precision_mode, {contract_size} contract_size,
+            {max_stake_amount} max_stake_amount
             from {trade_back_name}
             """))
 
@@ -212,17 +213,18 @@ def migrate_orders_table(engine, table_back_name: str, cols_order: List):
     ft_fee_base = get_column_def(cols_order, 'ft_fee_base', 'null')
     average = get_column_def(cols_order, 'average', 'null')
     stop_price = get_column_def(cols_order, 'stop_price', 'null')
+    funding_fee = get_column_def(cols_order, 'funding_fee', '0.0')
 
     # sqlite does not support literals for booleans
     with engine.begin() as connection:
         connection.execute(text(f"""
             insert into orders (id, ft_trade_id, ft_order_side, ft_pair, ft_is_open, order_id,
             status, symbol, order_type, side, price, amount, filled, average, remaining, cost,
-            stop_price, order_date, order_filled_date, order_update_date, ft_fee_base)
+            stop_price, order_date, order_filled_date, order_update_date, ft_fee_base, funding_fee)
             select id, ft_trade_id, ft_order_side, ft_pair, ft_is_open, order_id,
             status, symbol, order_type, side, price, amount, filled, {average} average, remaining,
             cost, {stop_price} stop_price, order_date, order_filled_date,
-            order_update_date, {ft_fee_base} ft_fee_base
+            order_update_date, {ft_fee_base} ft_fee_base, {funding_fee} funding_fee
             from {table_back_name}
             """))
 
@@ -307,9 +309,10 @@ def check_migrate(engine, decl_base, previous_tables) -> None:
     # Check if migration necessary
     # Migrates both trades and orders table!
     # if ('orders' not in previous_tables
-    # or not has_column(cols_orders, 'stop_price')):
+    # or not has_column(cols_orders, 'funding_fee')):
     migrating = False
-    if not has_column(cols_trades, 'contract_size'):
+    # if not has_column(cols_orders, 'funding_fee'):
+    if not has_column(cols_trades, 'max_stake_amount'):
         migrating = True
         logger.info(f"Running database migration for trades - "
                     f"backup: {table_back_name}, {order_table_bak_name}")

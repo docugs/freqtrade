@@ -7,7 +7,7 @@ from typing import Dict, NamedTuple, Optional
 
 import arrow
 
-from freqtrade.constants import UNLIMITED_STAKE_AMOUNT
+from freqtrade.constants import UNLIMITED_STAKE_AMOUNT, Config
 from freqtrade.enums import RunMode, TradingMode
 from freqtrade.exceptions import DependencyException
 from freqtrade.exchange import Exchange
@@ -35,7 +35,7 @@ class PositionWallet(NamedTuple):
 
 class Wallets:
 
-    def __init__(self, config: dict, exchange: Exchange, log: bool = True) -> None:
+    def __init__(self, config: Config, exchange: Exchange, log: bool = True) -> None:
         self._config = config
         self._log = log
         self._exchange = exchange
@@ -291,12 +291,17 @@ class Wallets:
         return self._check_available_stake_amount(stake_amount, available_amount)
 
     def validate_stake_amount(self, pair: str, stake_amount: Optional[float],
-                              min_stake_amount: Optional[float], max_stake_amount: float):
+                              min_stake_amount: Optional[float], max_stake_amount: float,
+                              trade_amount: Optional[float]):
         if not stake_amount:
             logger.debug(f"Stake amount is {stake_amount}, ignoring possible trade for {pair}.")
             return 0
 
         max_stake_amount = min(max_stake_amount, self.get_available_stake_amount())
+        if trade_amount:
+            # if in a trade, then the resulting trade size cannot go beyond the max stake
+            # Otherwise we could no longer exit.
+            max_stake_amount = min(max_stake_amount, max_stake_amount - trade_amount)
 
         if min_stake_amount is not None and min_stake_amount > max_stake_amount:
             if self._log:

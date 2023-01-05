@@ -52,13 +52,6 @@ def trim_dictlist(dict_list, num):
     return new
 
 
-@pytest.fixture(autouse=True)
-def backtesting_cleanup() -> None:
-    yield None
-
-    Backtesting.cleanup()
-
-
 def load_data_test(what, testdatadir):
     timerange = TimeRange.parse_timerange('1510694220-1510700340')
     data = history.load_pair_history(pair='UNITTEST/BTC', datadir=testdatadir,
@@ -87,7 +80,7 @@ def load_data_test(what, testdatadir):
         data.loc[:, 'close'] = np.sin(data.index * hz) / 1000 + base
 
     return {'UNITTEST/BTC': clean_ohlcv_dataframe(data, timeframe='1m', pair='UNITTEST/BTC',
-                                                  fill_missing=True)}
+                                                  fill_missing=True, drop_incomplete=True)}
 
 
 # FIX: fixturize this?
@@ -104,7 +97,6 @@ def _make_backtest_conf(mocker, datadir, conf=None, pair='UNITTEST/BTC'):
         'start_date': min_date,
         'end_date': max_date,
         'max_open_trades': 10,
-        'position_stacking': False,
     }
 
 
@@ -330,7 +322,7 @@ def test_data_to_dataframe_bt(default_conf, mocker, testdatadir) -> None:
     backtesting = Backtesting(default_conf)
     backtesting._set_strategy(backtesting.strategylist[0])
     processed = backtesting.strategy.advise_all_indicators(data)
-    assert len(processed['UNITTEST/BTC']) == 102
+    assert len(processed['UNITTEST/BTC']) == 103
 
     # Load strategy to compare the result between Backtesting function and strategy are the same
     strategy = StrategyResolver.load_strategy(default_conf)
@@ -434,7 +426,7 @@ def test_backtesting_no_pair_left(default_conf, mocker, caplog, testdatadir) -> 
 
     default_conf['pairlists'] = [{"method": "VolumePairList", "number_assets": 5}]
     with pytest.raises(OperationalException,
-                       match=r'VolumePairList not allowed for backtesting\..*StaticPairlist.*'):
+                       match=r'VolumePairList not allowed for backtesting\..*StaticPairList.*'):
         Backtesting(default_conf)
 
     default_conf.update({
@@ -467,7 +459,7 @@ def test_backtesting_pairlist_list(default_conf, mocker, caplog, testdatadir, ti
 
     default_conf['pairlists'] = [{"method": "VolumePairList", "number_assets": 5}]
     with pytest.raises(OperationalException,
-                       match=r'VolumePairList not allowed for backtesting\..*StaticPairlist.*'):
+                       match=r'VolumePairList not allowed for backtesting\..*StaticPairList.*'):
         Backtesting(default_conf)
 
     default_conf['pairlists'] = [{"method": "StaticPairList"}, {"method": "PerformanceFilter"}]
@@ -671,30 +663,9 @@ def test_backtest__get_sell_trade_entry(default_conf, fee, mocker) -> None:
         '',  # Exit Signal Name
 
     ]
-    row_detail = pd.DataFrame(
-        [
-            [
-                pd.Timestamp(year=2020, month=1, day=1, hour=5, minute=0, tzinfo=timezone.utc),
-                200, 200.1, 197, 199, 1, 0, 0, 0, '', '', '',
-            ], [
-                pd.Timestamp(year=2020, month=1, day=1, hour=5, minute=1, tzinfo=timezone.utc),
-                199, 199.7, 199, 199.5, 0, 0, 0, 0, '', '', '',
-            ], [
-                pd.Timestamp(year=2020, month=1, day=1, hour=5, minute=2, tzinfo=timezone.utc),
-                199.5, 200.8, 199, 200.9, 0, 0, 0, 0, '', '', '',
-            ], [
-                pd.Timestamp(year=2020, month=1, day=1, hour=5, minute=3, tzinfo=timezone.utc),
-                200.5, 210.5, 193, 210.5, 0, 0, 0, 0, '', '', '',  # ROI sell (?)
-            ], [
-                pd.Timestamp(year=2020, month=1, day=1, hour=5, minute=4, tzinfo=timezone.utc),
-                200, 200.1, 193, 199, 0, 0, 0, 0, '', '', '',
-            ],
-        ], columns=['date', 'open', 'high', 'low', 'close', 'enter_long', 'exit_long',
-                    'enter_short', 'exit_short', 'long_tag', 'short_tag', 'exit_tag']
-    )
 
     # No data available.
-    res = backtesting._get_exit_trade_entry(trade, row_sell)
+    res = backtesting._get_exit_trade_entry(trade, row_sell, True)
     assert res is not None
     assert res.exit_reason == ExitType.ROI.value
     assert res.close_date_utc == datetime(2020, 1, 1, 5, 0, tzinfo=timezone.utc)
@@ -707,19 +678,8 @@ def test_backtest__get_sell_trade_entry(default_conf, fee, mocker) -> None:
         [], columns=['date', 'open', 'high', 'low', 'close', 'enter_long', 'exit_long',
                      'enter_short', 'exit_short', 'long_tag', 'short_tag', 'exit_tag'])
 
-    res = backtesting._get_exit_trade_entry(trade, row)
+    res = backtesting._get_exit_trade_entry(trade, row, True)
     assert res is None
-
-    # Assign backtest-detail data
-    backtesting.detail_data[pair] = row_detail
-
-    res = backtesting._get_exit_trade_entry(trade, row_sell)
-    assert res is not None
-    assert res.exit_reason == ExitType.ROI.value
-    # Sell at minute 3 (not available above!)
-    assert res.close_date_utc == datetime(2020, 1, 1, 5, 3, tzinfo=timezone.utc)
-    sell_order = res.select_order('sell', True)
-    assert sell_order is not None
 
 
 def test_backtest_one(default_conf, fee, mocker, testdatadir) -> None:
@@ -742,7 +702,6 @@ def test_backtest_one(default_conf, fee, mocker, testdatadir) -> None:
         start_date=min_date,
         end_date=max_date,
         max_open_trades=10,
-        position_stacking=False,
     )
     results = result['results']
     assert not results.empty
@@ -751,6 +710,7 @@ def test_backtest_one(default_conf, fee, mocker, testdatadir) -> None:
     expected = pd.DataFrame(
         {'pair': [pair, pair],
          'stake_amount': [0.001, 0.001],
+         'max_stake_amount': [0.001, 0.001],
          'amount': [0.00957442, 0.0097064],
          'open_date': pd.to_datetime([Arrow(2018, 1, 29, 18, 40, 0).datetime,
                                       Arrow(2018, 1, 30, 3, 30, 0).datetime], utc=True
@@ -773,6 +733,7 @@ def test_backtest_one(default_conf, fee, mocker, testdatadir) -> None:
          'max_rate': [0.10501, 0.1038888],
          'is_open': [False, False],
          'enter_tag': [None, None],
+         "leverage": [1.0, 1.0],
          "is_short": [False, False],
          'open_timestamp': [1517251200000, 1517283000000],
          'close_timestamp': [1517265300000, 1517285400000],
@@ -796,14 +757,124 @@ def test_backtest_one(default_conf, fee, mocker, testdatadir) -> None:
     for _, t in results.iterrows():
         assert len(t['orders']) == 2
         ln = data_pair.loc[data_pair["date"] == t["open_date"]]
-        # Check open trade rate alignes to open rate
-        assert ln is not None
+        # Check open trade rate aligns to open rate
+        assert not ln.empty
         assert round(ln.iloc[0]["open"], 6) == round(t["open_rate"], 6)
-        # check close trade rate alignes to close rate or is between high and low
-        ln = data_pair.loc[data_pair["date"] == t["close_date"]]
-        assert (round(ln.iloc[0]["open"], 6) == round(t["close_rate"], 6) or
-                round(ln.iloc[0]["low"], 6) < round(
-                t["close_rate"], 6) < round(ln.iloc[0]["high"], 6))
+        # check close trade rate aligns to close rate or is between high and low
+        ln1 = data_pair.loc[data_pair["date"] == t["close_date"]]
+        assert (round(ln1.iloc[0]["open"], 6) == round(t["close_rate"], 6) or
+                round(ln1.iloc[0]["low"], 6) < round(
+                t["close_rate"], 6) < round(ln1.iloc[0]["high"], 6))
+
+
+@pytest.mark.parametrize('use_detail', [True, False])
+def test_backtest_one_detail(default_conf_usdt, fee, mocker, testdatadir, use_detail) -> None:
+    default_conf_usdt['use_exit_signal'] = False
+    mocker.patch('freqtrade.exchange.Exchange.get_fee', fee)
+    mocker.patch("freqtrade.exchange.Exchange.get_min_pair_stake_amount", return_value=0.00001)
+    mocker.patch("freqtrade.exchange.Exchange.get_max_pair_stake_amount", return_value=float('inf'))
+    if use_detail:
+        default_conf_usdt['timeframe_detail'] = '1m'
+    patch_exchange(mocker)
+
+    def advise_entry(df, *args, **kwargs):
+        # Mock function to force several entries
+        df.loc[(df['rsi'] < 40), 'enter_long'] = 1
+        return df
+
+    def custom_entry_price(proposed_rate, **kwargs):
+        return proposed_rate * 0.997
+
+    backtesting = Backtesting(default_conf_usdt)
+    backtesting._set_strategy(backtesting.strategylist[0])
+    backtesting.strategy.populate_entry_trend = advise_entry
+    backtesting.strategy.custom_entry_price = custom_entry_price
+    pair = 'XRP/ETH'
+    # Pick a timerange adapted to the pair we use to test
+    timerange = TimeRange.parse_timerange('20191010-20191013')
+    data = history.load_data(datadir=testdatadir, timeframe='5m', pairs=['XRP/ETH'],
+                             timerange=timerange)
+    if use_detail:
+        data_1m = history.load_data(datadir=testdatadir, timeframe='1m', pairs=['XRP/ETH'],
+                                    timerange=timerange)
+        backtesting.detail_data = data_1m
+    processed = backtesting.strategy.advise_all_indicators(data)
+    min_date, max_date = get_timerange(processed)
+
+    result = backtesting.backtest(
+        processed=deepcopy(processed),
+        start_date=min_date,
+        end_date=max_date,
+        max_open_trades=10,
+    )
+    results = result['results']
+    assert not results.empty
+    # Timeout settings from default_conf = entry: 10, exit: 30
+    assert len(results) == (2 if use_detail else 3)
+
+    assert 'orders' in results.columns
+    data_pair = processed[pair]
+
+    data_1m_pair = data_1m[pair] if use_detail else pd.DataFrame()
+    late_entry = 0
+    for _, t in results.iterrows():
+        assert len(t['orders']) == 2
+
+        entryo = t['orders'][0]
+        entry_ts = datetime.fromtimestamp(entryo['order_filled_timestamp'] // 1000, tz=timezone.utc)
+        if entry_ts > t['open_date']:
+            late_entry += 1
+
+        # Get "entry fill" candle
+        ln = (data_1m_pair.loc[data_1m_pair["date"] == entry_ts]
+              if use_detail else data_pair.loc[data_pair["date"] == entry_ts])
+        # Check open trade rate aligns to open rate
+        assert not ln.empty
+
+        # assert round(ln.iloc[0]["open"], 6) == round(t["open_rate"], 6)
+        assert round(ln.iloc[0]["low"], 6) <= round(
+                t["open_rate"], 6) <= round(ln.iloc[0]["high"], 6)
+        # check close trade rate aligns to close rate or is between high and low
+        ln1 = data_pair.loc[data_pair["date"] == t["close_date"]]
+        if use_detail:
+            ln1_1m = data_1m_pair.loc[data_1m_pair["date"] == t["close_date"]]
+            assert not ln1.empty or not ln1_1m.empty
+        else:
+            assert not ln1.empty
+        ln2 = ln1_1m if ln1.empty else ln1
+
+        assert (round(ln2.iloc[0]["low"], 6) <= round(
+                t["close_rate"], 6) <= round(ln2.iloc[0]["high"], 6))
+
+    assert late_entry > 0
+
+
+def test_backtest_timedout_entry_orders(default_conf, fee, mocker, testdatadir) -> None:
+    # This strategy intentionally places unfillable orders.
+    default_conf['strategy'] = 'StrategyTestV3CustomEntryPrice'
+    default_conf['startup_candle_count'] = 0
+    # Cancel unfilled order after 4 minutes on 5m timeframe.
+    default_conf["unfilledtimeout"] = {"entry": 4}
+    mocker.patch('freqtrade.exchange.Exchange.get_fee', fee)
+    mocker.patch("freqtrade.exchange.Exchange.get_min_pair_stake_amount", return_value=0.00001)
+    mocker.patch("freqtrade.exchange.Exchange.get_max_pair_stake_amount", return_value=float('inf'))
+    patch_exchange(mocker)
+    backtesting = Backtesting(default_conf)
+    backtesting._set_strategy(backtesting.strategylist[0])
+    # Testing dataframe contains 11 candles. Expecting 10 timed out orders.
+    timerange = TimeRange('date', 'date', 1517227800, 1517231100)
+    data = history.load_data(datadir=testdatadir, timeframe='5m', pairs=['UNITTEST/BTC'],
+                             timerange=timerange)
+    min_date, max_date = get_timerange(data)
+
+    result = backtesting.backtest(
+        processed=deepcopy(data),
+        start_date=min_date,
+        end_date=max_date,
+        max_open_trades=1,
+    )
+
+    assert result['timedout_entry_orders'] == 10
 
 
 def test_backtest_1min_timeframe(default_conf, fee, mocker, testdatadir) -> None:
@@ -826,7 +897,6 @@ def test_backtest_1min_timeframe(default_conf, fee, mocker, testdatadir) -> None
         start_date=min_date,
         end_date=max_date,
         max_open_trades=1,
-        position_stacking=False,
     )
     assert not results['results'].empty
     assert len(results['results']) == 1
@@ -846,7 +916,7 @@ def test_backtest_trim_no_data_left(default_conf, fee, mocker, testdatadir) -> N
     data = history.load_data(datadir=testdatadir, timeframe='5m', pairs=['UNITTEST/BTC'],
                              timerange=timerange)
     df = data['UNITTEST/BTC']
-    df.loc[:, 'date'] = df.loc[:, 'date'] - timedelta(days=1)
+    df['date'] = df.loc[:, 'date'] - timedelta(days=1)
     # Trimming 100 candles, so after 2nd trimming, no candle is left.
     df = df.iloc[:100]
     data['XRP/USDT'] = df
@@ -858,7 +928,6 @@ def test_backtest_trim_no_data_left(default_conf, fee, mocker, testdatadir) -> N
         start_date=min_date,
         end_date=max_date,
         max_open_trades=10,
-        position_stacking=False,
     )
 
 
@@ -913,7 +982,6 @@ def test_backtest_dataprovider_analyzed_df(default_conf, fee, mocker, testdatadi
         start_date=min_date,
         end_date=max_date,
         max_open_trades=10,
-        position_stacking=False,
     )
     assert count == 5
 
@@ -957,8 +1025,6 @@ def test_backtest_pricecontours_protections(default_conf, fee, mocker, testdatad
             start_date=min_date,
             end_date=max_date,
             max_open_trades=1,
-            position_stacking=False,
-            enable_protections=default_conf.get('enable_protections', False),
         )
         assert len(results['results']) == numres
 
@@ -1001,8 +1067,6 @@ def test_backtest_pricecontours(default_conf, fee, mocker, testdatadir,
         start_date=min_date,
         end_date=max_date,
         max_open_trades=1,
-        position_stacking=False,
-        enable_protections=default_conf.get('enable_protections', False),
     )
     assert len(results['results']) == expected
 
@@ -1114,7 +1178,6 @@ def test_backtest_multi_pair(default_conf, fee, mocker, tres, pair, testdatadir)
         'start_date': min_date,
         'end_date': max_date,
         'max_open_trades': 3,
-        'position_stacking': False,
     }
 
     results = backtesting.backtest(**backtest_conf)
@@ -1137,7 +1200,6 @@ def test_backtest_multi_pair(default_conf, fee, mocker, tres, pair, testdatadir)
         'start_date': min_date,
         'end_date': max_date,
         'max_open_trades': 1,
-        'position_stacking': False,
     }
     results = backtesting.backtest(**backtest_conf)
     assert len(evaluate_result_multi(results['results'], '5m', 1)) == 0
@@ -1172,9 +1234,9 @@ def test_backtest_start_timerange(default_conf, mocker, caplog, testdatadir):
         'Parameter --timerange detected: 1510694220-1510700340 ...',
         f'Using data directory: {testdatadir} ...',
         'Loading data from 2017-11-14 20:57:00 '
-        'up to 2017-11-14 22:58:00 (0 days).',
+        'up to 2017-11-14 22:59:00 (0 days).',
         'Backtesting with data from 2017-11-14 21:17:00 '
-        'up to 2017-11-14 22:58:00 (0 days).',
+        'up to 2017-11-14 22:59:00 (0 days).',
         'Parameter --enable-position-stacking detected ...'
     ]
 
@@ -1251,9 +1313,9 @@ def test_backtest_start_multi_strat(default_conf, mocker, caplog, testdatadir):
         'Parameter --timerange detected: 1510694220-1510700340 ...',
         f'Using data directory: {testdatadir} ...',
         'Loading data from 2017-11-14 20:57:00 '
-        'up to 2017-11-14 22:58:00 (0 days).',
+        'up to 2017-11-14 22:59:00 (0 days).',
         'Backtesting with data from 2017-11-14 21:17:00 '
-        'up to 2017-11-14 22:58:00 (0 days).',
+        'up to 2017-11-14 22:59:00 (0 days).',
         'Parameter --enable-position-stacking detected ...',
         f'Running backtesting for Strategy {CURRENT_TEST_STRATEGY}',
         'Running backtesting for Strategy StrategyTestV2',
@@ -1362,9 +1424,9 @@ def test_backtest_start_multi_strat_nomock(default_conf, mocker, caplog, testdat
         'Parameter --timerange detected: 1510694220-1510700340 ...',
         f'Using data directory: {testdatadir} ...',
         'Loading data from 2017-11-14 20:57:00 '
-        'up to 2017-11-14 22:58:00 (0 days).',
+        'up to 2017-11-14 22:59:00 (0 days).',
         'Backtesting with data from 2017-11-14 21:17:00 '
-        'up to 2017-11-14 22:58:00 (0 days).',
+        'up to 2017-11-14 22:59:00 (0 days).',
         'Parameter --enable-position-stacking detected ...',
         f'Running backtesting for Strategy {CURRENT_TEST_STRATEGY}',
         'Running backtesting for Strategy StrategyTestV2',
@@ -1378,7 +1440,7 @@ def test_backtest_start_multi_strat_nomock(default_conf, mocker, caplog, testdat
     assert 'EXIT REASON STATS' in captured.out
     assert 'DAY BREAKDOWN' in captured.out
     assert 'LEFT OPEN TRADES REPORT' in captured.out
-    assert '2017-11-14 21:17:00 -> 2017-11-14 22:58:00 | Max open trades : 1' in captured.out
+    assert '2017-11-14 21:17:00 -> 2017-11-14 22:59:00 | Max open trades : 1' in captured.out
     assert 'STRATEGY SUMMARY' in captured.out
 
 
@@ -1510,9 +1572,9 @@ def test_backtest_start_nomock_futures(default_conf_usdt, mocker,
         'Parameter -i/--timeframe detected ... Using timeframe: 1h ...',
         f'Using data directory: {testdatadir} ...',
         'Loading data from 2021-11-17 01:00:00 '
-        'up to 2021-11-21 03:00:00 (4 days).',
+        'up to 2021-11-21 04:00:00 (4 days).',
         'Backtesting with data from 2021-11-17 21:00:00 '
-        'up to 2021-11-21 03:00:00 (3 days).',
+        'up to 2021-11-21 04:00:00 (3 days).',
         'XRP/USDT, funding_rate, 8h, data starts at 2021-11-18 00:00:00',
         'XRP/USDT, mark, 8h, data starts at 2021-11-18 00:00:00',
         f'Running backtesting for Strategy {CURRENT_TEST_STRATEGY}',
@@ -1623,9 +1685,9 @@ def test_backtest_start_multi_strat_nomock_detail(default_conf, mocker,
         'Parameter --timeframe-detail detected, using 1m for intra-candle backtesting ...',
         f'Using data directory: {testdatadir} ...',
         'Loading data from 2019-10-11 00:00:00 '
-        'up to 2019-10-13 11:10:00 (2 days).',
+        'up to 2019-10-13 11:15:00 (2 days).',
         'Backtesting with data from 2019-10-11 01:40:00 '
-        'up to 2019-10-13 11:10:00 (2 days).',
+        'up to 2019-10-13 11:15:00 (2 days).',
         f'Running backtesting for Strategy {CURRENT_TEST_STRATEGY}',
     ]
 
@@ -1726,7 +1788,7 @@ def test_backtest_start_multi_strat_caching(default_conf, mocker, caplog, testda
         'Parameter --timerange detected: 1510694220-1510700340 ...',
         f'Using data directory: {testdatadir} ...',
         'Loading data from 2017-11-14 20:57:00 '
-        'up to 2017-11-14 22:58:00 (0 days).',
+        'up to 2017-11-14 22:59:00 (0 days).',
         'Parameter --enable-position-stacking detected ...',
     ]
 
@@ -1739,7 +1801,7 @@ def test_backtest_start_multi_strat_caching(default_conf, mocker, caplog, testda
             'Running backtesting for Strategy StrategyTestV2',
             'Running backtesting for Strategy StrategyTestV3',
             'Ignoring max_open_trades (--disable-max-market-positions was used) ...',
-            'Backtesting with data from 2017-11-14 21:17:00 up to 2017-11-14 22:58:00 (0 days).',
+            'Backtesting with data from 2017-11-14 21:17:00 up to 2017-11-14 22:59:00 (0 days).',
         ]
     elif run_id == '2' and min_backtest_date < start_time:
         assert backtestmock.call_count == 0
@@ -1752,7 +1814,7 @@ def test_backtest_start_multi_strat_caching(default_conf, mocker, caplog, testda
             'Reusing result of previous backtest for StrategyTestV2',
             'Running backtesting for Strategy StrategyTestV3',
             'Ignoring max_open_trades (--disable-max-market-positions was used) ...',
-            'Backtesting with data from 2017-11-14 21:17:00 up to 2017-11-14 22:58:00 (0 days).',
+            'Backtesting with data from 2017-11-14 21:17:00 up to 2017-11-14 22:59:00 (0 days).',
         ]
         assert backtestmock.call_count == 1
 
